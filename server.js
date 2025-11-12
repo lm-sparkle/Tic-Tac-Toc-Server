@@ -18,7 +18,7 @@ const io = new Server(server, {
 });
 
 // Store active rooms and games
-// Key: 6-character room ID, Value: { players: [], board: [], currentPlayer: 'X', gameStatus: 'waiting' | 'playing', fullRoomId: string }
+// Key: 6-character room ID, Value: { players: [], board: [], currentPlayer: 'X', gameStatus: 'waiting' | 'playing', fullRoomId: string, lastStartingPlayer: 'X' | 'O' }
 const rooms = new Map();
 
 // Generate a 6-character room ID
@@ -75,6 +75,7 @@ io.on('connection', (socket) => {
       currentPlayer: 'X',
       gameStatus: 'waiting',
       fullRoomId: fullRoomId, // Store full ID for socket operations
+      lastStartingPlayer: 'X', // Track who started the last game (for alternating)
     });
     
     // Join socket room using full ID
@@ -132,13 +133,18 @@ io.on('connection', (socket) => {
       isFirstPlayer: false,
     });
 
+    // Initialize lastStartingPlayer if not set (first game)
+    if (!room.lastStartingPlayer) {
+      room.lastStartingPlayer = 'X';
+    }
+    
     // Notify first player that second player joined
     io.to(room.fullRoomId).emit('game:player-joined', { symbol: 'X' });
     
     room.gameStatus = 'playing';
-    room.currentPlayer = 'X';
+    room.currentPlayer = room.lastStartingPlayer; // Use lastStartingPlayer for first game
     
-    console.log(`🎮 Game started in room ${shortRoomId} (full: ${room.fullRoomId}) - Player X: ${room.players[0]}, Player O: ${socket.id}`);
+    console.log(`🎮 Game started in room ${shortRoomId} (full: ${room.fullRoomId}) - Player X: ${room.players[0]}, Player O: ${socket.id}, Starting: ${room.currentPlayer}`);
   });
 
   // Handle game move
@@ -214,8 +220,11 @@ io.on('connection', (socket) => {
       return;
     }
 
+    // Alternate the starting player
+    room.lastStartingPlayer = room.lastStartingPlayer === 'X' ? 'O' : 'X';
+    
     room.board = Array(9).fill(null);
-    room.currentPlayer = 'X';
+    room.currentPlayer = room.lastStartingPlayer; // Alternate starting player
     room.gameStatus = 'playing';
 
     io.to(roomId).emit('game:move', {
@@ -224,7 +233,7 @@ io.on('connection', (socket) => {
       winner: null,
     });
     
-    console.log(`🔄 Game reset in room ${roomId}`);
+    console.log(`🔄 Game reset in room ${roomId} - New starting player: ${room.currentPlayer}`);
   });
 
   // Leave game
@@ -244,12 +253,15 @@ io.on('connection', (socket) => {
     if (room) {
       room.players = room.players.filter((id) => id !== socket.id);
       
+      // Notify the leaving player that they successfully left
+      socket.emit('game:left');
+      
       if (room.players.length === 0) {
         rooms.delete(shortRoomId);
         console.log(`🗑️ Room ${shortRoomId} deleted (empty)`);
       } else {
-        // Notify remaining player
-        io.to(roomId).emit('game:opponent-left');
+        // Notify remaining player (not the one who left)
+        socket.to(roomId).emit('game:opponent-left');
         console.log(`👋 Player ${socket.id} left room ${shortRoomId}`);
       }
     }
@@ -269,7 +281,8 @@ io.on('connection', (socket) => {
           rooms.delete(shortRoomId);
           console.log(`🗑️ Room ${shortRoomId} cleaned up after disconnect`);
         } else {
-          io.to(room.fullRoomId).emit('game:opponent-left');
+          // Notify remaining players (not the one who disconnected)
+          socket.to(room.fullRoomId).emit('game:opponent-left');
           console.log(`👋 Player ${socket.id} disconnected from room ${shortRoomId}`);
         }
       }
